@@ -1,12 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Customer, Vendor, Product, Quotation } from './types';
 import { storage } from './utils/storage';
+import { apiService } from './services/api';
+import { auth, onAuthStateChanged, User } from './lib/firebase';
 import { CustomerManager } from './components/CustomerManager';
 import { VendorManager } from './components/VendorManager';
 import { ProductManager } from './components/ProductManager';
 import { QuoteManager } from './components/QuoteManager';
 import { AcceptanceCriteriaView } from './components/AcceptanceCriteriaView';
 import { LocalTestingModal } from './components/LocalTestingModal';
+import { CloudDatabaseModal } from './components/CloudDatabaseModal';
 import {
   Building2,
   Truck,
@@ -18,7 +21,10 @@ import {
   TrendingUp,
   Users,
   Briefcase,
-  Laptop
+  Laptop,
+  Database,
+  Cloud,
+  CheckCircle2
 } from 'lucide-react';
 
 type TabType = 'customers' | 'vendors' | 'products' | 'quotes' | 'acceptance';
@@ -26,7 +32,7 @@ type TabType = 'customers' | 'vendors' | 'products' | 'quotes' | 'acceptance';
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('quotes');
 
-  // Core Data States with localStorage persistence
+  // Core Data States with localStorage persistence + PostgreSQL Sync
   const [customers, setCustomers] = useState<Customer[]>(() => storage.getCustomers());
   const [vendors, setVendors] = useState<Vendor[]>(() => storage.getVendors());
   const [products, setProducts] = useState<Product[]>(() => storage.getProducts());
@@ -35,8 +41,47 @@ export default function App() {
   // Inter-module jump state (e.g. from customer click "開立此客戶報價單")
   const [targetCustomerIdForQuote, setTargetCustomerIdForQuote] = useState<string | null>(null);
 
-  // Local testing guide modal state
+  // Modals state
   const [isTestingModalOpen, setIsTestingModalOpen] = useState<boolean>(false);
+  const [isDbModalOpen, setIsDbModalOpen] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isDbConnected, setIsDbConnected] = useState<boolean | null>(null);
+
+  // Load from database backend
+  const loadDataFromBackend = useCallback(async () => {
+    try {
+      const [dbCustomers, dbVendors, dbProducts, dbQuotes, status] = await Promise.all([
+        apiService.getCustomers(),
+        apiService.getVendors(),
+        apiService.getProducts(),
+        apiService.getQuotations(),
+        apiService.checkStatus(),
+      ]);
+
+      if (dbCustomers.length) setCustomers(dbCustomers);
+      if (dbVendors.length) setVendors(dbVendors);
+      if (dbProducts.length) setProducts(dbProducts);
+      if (dbQuotes.length) setQuotations(dbQuotes);
+      setIsDbConnected(status.connected);
+    } catch (err) {
+      console.warn('Load from backend failed, using local storage:', err);
+      setIsDbConnected(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDataFromBackend();
+
+    // Listen to Firebase Auth
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      if (user && user.email) {
+        apiService.syncUser(user.uid, user.email);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [loadDataFromBackend]);
 
   const handleDataRestored = () => {
     setCustomers(storage.getCustomers());
@@ -71,14 +116,17 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
     setCustomers((prev) => [newCust, ...prev]);
+    apiService.saveCustomer(newCust);
   };
 
   const handleUpdateCustomer = (customer: Customer) => {
     setCustomers((prev) => prev.map((c) => (c.id === customer.id ? customer : c)));
+    apiService.saveCustomer(customer);
   };
 
   const handleDeleteCustomer = (id: string) => {
     setCustomers((prev) => prev.filter((c) => c.id !== id));
+    apiService.deleteCustomer(id);
   };
 
   const handleCreateQuoteForCustomer = (customer: Customer) => {
@@ -95,14 +143,17 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
     setVendors((prev) => [newVend, ...prev]);
+    apiService.saveVendor(newVend);
   };
 
   const handleUpdateVendor = (vendor: Vendor) => {
     setVendors((prev) => prev.map((v) => (v.id === vendor.id ? vendor : v)));
+    apiService.saveVendor(vendor);
   };
 
   const handleDeleteVendor = (id: string) => {
     setVendors((prev) => prev.filter((v) => v.id !== id));
+    apiService.deleteVendor(id);
   };
 
   // Product Actions
@@ -114,14 +165,17 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
     setProducts((prev) => [newProd, ...prev]);
+    apiService.saveProduct(newProd);
   };
 
   const handleUpdateProduct = (product: Product) => {
     setProducts((prev) => prev.map((p) => (p.id === product.id ? product : p)));
+    apiService.saveProduct(product);
   };
 
   const handleDeleteProduct = (id: string) => {
     setProducts((prev) => prev.filter((p) => p.id !== id));
+    apiService.deleteProduct(id);
   };
 
   // Quotation Actions
@@ -133,24 +187,24 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
     setQuotations((prev) => [newQuote, ...prev]);
+    apiService.saveQuotation(newQuote);
   };
 
   const handleUpdateQuotation = (quotation: Quotation) => {
     setQuotations((prev) => prev.map((q) => (q.id === quotation.id ? quotation : q)));
+    apiService.saveQuotation(quotation);
   };
 
   const handleDeleteQuotation = (id: string) => {
     setQuotations((prev) => prev.filter((q) => q.id !== id));
+    apiService.deleteQuotation(id);
   };
 
   // Reset demo data
-  const handleResetData = () => {
-    if (window.confirm('確定將所有客戶、廠商、產品與報價單重置為初始示範資料？')) {
-      storage.resetAllToDefault();
-      setCustomers(storage.getCustomers());
-      setVendors(storage.getVendors());
-      setProducts(storage.getProducts());
-      setQuotations(storage.getQuotations());
+  const handleResetData = async () => {
+    if (window.confirm('確定將所有客戶、廠商、產品與報價單重置為初始示範資料並同步資料庫？')) {
+      await apiService.resetAll();
+      await loadDataFromBackend();
     }
   };
 
@@ -184,6 +238,24 @@ export default function App() {
 
             {/* Header Right Actions */}
             <div className="flex items-center gap-2">
+              <button
+                id="btn-cloud-db-status"
+                onClick={() => setIsDbModalOpen(true)}
+                title="PostgreSQL (Neon / Cloud SQL) 雲端資料庫管理與部署"
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition border shadow-2xs ${
+                  isDbConnected
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                    : 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                }`}
+              >
+                <Database className="w-3.5 h-3.5 text-blue-600" />
+                <span className="flex items-center gap-1">
+                  <span className={`w-2 h-2 rounded-full ${isDbConnected ? 'bg-emerald-500' : 'bg-amber-400'}`} />
+                  <span className="hidden sm:inline">PostgreSQL (Neon/Cloud SQL)</span>
+                  <span className="sm:hidden">資料庫</span>
+                </span>
+              </button>
+
               <button
                 id="btn-local-testing-guide"
                 onClick={() => setIsTestingModalOpen(true)}
@@ -435,6 +507,15 @@ export default function App() {
         isOpen={isTestingModalOpen}
         onClose={() => setIsTestingModalOpen(false)}
         onDataRestored={handleDataRestored}
+      />
+
+      {/* Cloud Database (PostgreSQL / Neon / Vercel) Modal */}
+      <CloudDatabaseModal
+        isOpen={isDbModalOpen}
+        onClose={() => setIsDbModalOpen(false)}
+        onSyncCompleted={loadDataFromBackend}
+        currentUser={currentUser}
+        setCurrentUser={setCurrentUser}
       />
     </div>
   );
