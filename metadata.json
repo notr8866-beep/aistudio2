@@ -1,0 +1,6 @@
+{
+  "name": "報價管理系統",
+  "description": "提供客戶管理、廠商管理、產品管理與報價單連動計算、列印匯出及客觀驗收指標之企業級管理系統",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
